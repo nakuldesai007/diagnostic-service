@@ -1,5 +1,9 @@
 FROM eclipse-temurin:21-jre-alpine
 
+# Set timezone
+ENV TZ=America/New_York
+RUN apk add --no-cache tzdata
+
 # Set working directory
 WORKDIR /app
 

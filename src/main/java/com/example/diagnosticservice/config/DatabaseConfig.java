@@ -6,6 +6,9 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 
+import jakarta.annotation.PostConstruct;
+import java.util.TimeZone;
+
 @Configuration
 @EnableJpaRepositories(basePackages = "com.example.diagnosticservice.repository")
 @EntityScan(basePackages = "com.example.diagnosticservice.entity")
@@ -13,6 +16,10 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
 @Slf4j
 public class DatabaseConfig {
     
-    // Database configuration is handled by Spring Boot auto-configuration
-    // based on application.yml properties
+    @PostConstruct
+    public void configureTimezone() {
+        // Ensure database operations use America/New_York timezone
+        TimeZone.setDefault(TimeZone.getTimeZone("America/New_York"));
+        log.info("Database configuration initialized with timezone: {}", TimeZone.getDefault().getID());
+    }
 }

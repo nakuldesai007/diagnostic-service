@@ -5,6 +5,11 @@ spring:
   application:
     name: diagnostic-service
   
+  # Timezone Configuration
+  jackson:
+    time-zone: America/New_York
+    date-format: yyyy-MM-dd HH:mm:ss
+  
   # Database Configuration
   datasource:
     url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/diagnostic_service}
@@ -123,8 +128,8 @@ logging:
     "[org.springframework.kafka]": INFO
     "[io.github.resilience4j]": INFO
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
-    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+    console: "%d{yyyy-MM-dd HH:mm:ss} [America/New_York] - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [America/New_York] [%thread] %-5level %logger{36} - %msg%n"
 
 # Application Information
 info:

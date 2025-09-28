@@ -70,6 +70,7 @@ services:
       DATABASE_URL: jdbc:postgresql://postgres:5432/diagnostic_service
       DATABASE_USERNAME: diagnostic_user
       DATABASE_PASSWORD: diagnostic_password
+      TZ: America/New_York
     volumes:
       - ./logs:/var/log/diagnostic-service
     healthcheck:

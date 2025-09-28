@@ -22,3 +22,6 @@ logging:
     "[com.example.diagnosticservice]": DEBUG
     "[org.springframework.kafka]": DEBUG
     "[io.github.resilience4j]": DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [America/New_York] - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [America/New_York] [%thread] %-5level %logger{36} - %msg%n"
