@@ -60,20 +60,44 @@ check_services() {
     # Check if application is running
     if ! curl -s "$API_BASE/actuator/health" > /dev/null; then
         log_error "Application is not running on $API_BASE"
+        log_info "Make sure to run ./setup-test-environment.sh first"
         exit 1
     fi
     
-    # Check if Kafka is running
-    if ! /opt/homebrew/opt/kafka/bin/kafka-topics --bootstrap-server $KAFKA_BOOTSTRAP --list > /dev/null 2>&1; then
-        log_error "Kafka is not running on $KAFKA_BOOTSTRAP"
-        exit 1
+    # Check if Kafka is running (try both local and Docker)
+    if command -v /opt/homebrew/opt/kafka/bin/kafka-topics > /dev/null 2>&1; then
+        # Local Kafka installation
+        if ! /opt/homebrew/opt/kafka/bin/kafka-topics --bootstrap-server $KAFKA_BOOTSTRAP --list > /dev/null 2>&1; then
+            log_error "Local Kafka is not running on $KAFKA_BOOTSTRAP"
+            log_info "Make sure to run ./setup-test-environment.sh first"
+            exit 1
+        fi
+    else
+        # Docker Kafka
+        if ! docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list > /dev/null 2>&1; then
+            log_error "Docker Kafka is not running"
+            log_info "Make sure to run ./setup-test-environment.sh first"
+            exit 1
+        fi
     fi
     
     # Check if PostgreSQL is accessible
-    export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"
-    if ! psql -U diagnostic_user -d diagnostic_service -c "SELECT 1;" > /dev/null 2>&1; then
-        log_error "PostgreSQL is not accessible"
-        exit 1
+    if docker ps | grep -q postgres; then
+        if ! docker exec postgres psql -U diagnostic_user -d diagnostic_service -c "SELECT 1;" > /dev/null 2>&1; then
+            log_error "PostgreSQL is not accessible"
+            log_info "Make sure to run ./setup-test-environment.sh first"
+            exit 1
+        fi
+        log_success "PostgreSQL is accessible"
+    else
+        # Try local PostgreSQL
+        export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"
+        if ! psql -U diagnostic_user -d diagnostic_service -c "SELECT 1;" > /dev/null 2>&1; then
+            log_error "PostgreSQL is not accessible"
+            log_info "Make sure to run ./setup-test-environment.sh first"
+            exit 1
+        fi
+        log_success "PostgreSQL is accessible"
     fi
     
     log_success "All services are running"
@@ -83,12 +107,26 @@ check_services() {
 get_baseline_counts() {
     log_info "Getting baseline database counts..."
     
-    export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"
+    if docker ps | grep -q postgres; then
+        # Use Docker PostgreSQL
+        BASELINE_MESSAGE_LOGS=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs;")
+        BASELINE_CIRCUIT_BREAKER_EVENTS=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM circuit_breaker_events;")
+        BASELINE_RETRY_ATTEMPTS=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM retry_attempts;")
+        BASELINE_DLQ_MESSAGES=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM dead_letter_messages;")
+    else
+        # Use local PostgreSQL
+        export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"
+        BASELINE_MESSAGE_LOGS=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs;")
+        BASELINE_CIRCUIT_BREAKER_EVENTS=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM circuit_breaker_events;")
+        BASELINE_RETRY_ATTEMPTS=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM retry_attempts;")
+        BASELINE_DLQ_MESSAGES=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM dead_letter_messages;")
+    fi
     
-    BASELINE_MESSAGE_LOGS=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs;")
-    BASELINE_CIRCUIT_BREAKER_EVENTS=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM circuit_breaker_events;")
-    BASELINE_RETRY_ATTEMPTS=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM retry_attempts;")
-    BASELINE_DLQ_MESSAGES=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM dead_letter_messages;")
+    # Clean up counts (remove spaces and newlines)
+    BASELINE_MESSAGE_LOGS=$(echo $BASELINE_MESSAGE_LOGS | tr -d ' \n')
+    BASELINE_CIRCUIT_BREAKER_EVENTS=$(echo $BASELINE_CIRCUIT_BREAKER_EVENTS | tr -d ' \n')
+    BASELINE_RETRY_ATTEMPTS=$(echo $BASELINE_RETRY_ATTEMPTS | tr -d ' \n')
+    BASELINE_DLQ_MESSAGES=$(echo $BASELINE_DLQ_MESSAGES | tr -d ' \n')
     
     log_info "Baseline counts:"
     echo "  Message Logs: $BASELINE_MESSAGE_LOGS"
@@ -111,32 +149,67 @@ send_batch() {
         
         case $batch_type in
             "success")
-                message='{"id":"'$message_id'","name":"Performance Test Success","data":"This should process successfully","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","testType":"SUCCESS"}'
+                message='{"id":"'$message_id'","name":"Performance Test Success","data":"This should process successfully","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%S.000Z)'","testType":"SUCCESS"}'
                 ;;
             "timeout")
-                message='{"id":"'$message_id'","name":"Performance Test Timeout","data":"Connection timeout error","errorMessage":"Connection timeout","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","testType":"TIMEOUT"}'
+                message='{"id":"'$message_id'","name":"Performance Test Timeout","data":"Connection timeout error","errorType":"TIMEOUT","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%S.000Z)'","testType":"TIMEOUT"}'
                 ;;
             "database")
-                message='{"id":"'$message_id'","name":"Performance Test Database","data":"Database connection failed","errorMessage":"Database connection failed","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","testType":"DATABASE"}'
+                message='{"id":"'$message_id'","name":"Performance Test Database","data":"Database connection failed","errorType":"DATABASE","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%S.000Z)'","testType":"DATABASE"}'
                 ;;
             "validation")
-                message='{"id":"'$message_id'","name":"Performance Test Validation","data":"Validation failed - invalid format","errorMessage":"Validation failed","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","testType":"VALIDATION"}'
+                message='{"id":"'$message_id'","name":"Performance Test Validation","data":"Validation failed - invalid format","errorType":"VALIDATION","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%S.000Z)'","testType":"VALIDATION"}'
                 ;;
             "user-not-found")
-                message='{"id":"'$message_id'","name":"Performance Test User Not Found","data":"User not found","errorMessage":"User not found","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","testType":"USER_NOT_FOUND"}'
+                message='{"id":"'$message_id'","name":"Performance Test User Not Found","data":"User not found","errorType":"NOT_FOUND","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%S.000Z)'","testType":"USER_NOT_FOUND"}'
                 ;;
             "system-overload")
-                message='{"id":"'$message_id'","name":"Performance Test System Overload","data":"System overload","errorMessage":"System overload","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","testType":"SYSTEM_OVERLOAD"}'
+                message='{"id":"'$message_id'","name":"Performance Test System Overload","data":"System overload","errorType":"OVERLOAD","timestamp":"'$(date -u +%Y-%m-%dT%H:%M:%S.000Z)'","testType":"SYSTEM_OVERLOAD"}'
                 ;;
         esac
         
-        echo "$message" | /opt/homebrew/opt/kafka/bin/kafka-console-producer \
-            --bootstrap-server $KAFKA_BOOTSTRAP \
-            --topic $TEST_TOPIC \
-            --property "key.separator=:" \
-            --property "parse.key=true" \
-            --property "key.serializer=org.apache.kafka.common.serialization.StringSerializer" \
-            --property "key=$message_id" > /dev/null 2>&1
+        # Send message with retry logic
+        local retry_count=0
+        local max_retries=3
+        local sent=false
+        
+        while [ $retry_count -lt $max_retries ] && [ "$sent" = false ]; do
+            if command -v /opt/homebrew/opt/kafka/bin/kafka-console-producer > /dev/null 2>&1; then
+                # Local Kafka installation
+                if echo "$message_id:$message" | /opt/homebrew/opt/kafka/bin/kafka-console-producer \
+                    --bootstrap-server $KAFKA_BOOTSTRAP \
+                    --topic $TEST_TOPIC \
+                    --property "key.separator=:" \
+                    --property "parse.key=true" \
+                    --property "key.serializer=org.apache.kafka.common.serialization.StringSerializer" \
+                    --property "value.serializer=org.apache.kafka.common.serialization.StringSerializer" > /dev/null 2>&1; then
+                    sent=true
+                fi
+            else
+                # Docker Kafka
+                if echo "$message_id:$message" | docker exec -i kafka kafka-console-producer \
+                    --bootstrap-server localhost:9092 \
+                    --topic $TEST_TOPIC \
+                    --property "key.separator=:" \
+                    --property "parse.key=true" \
+                    --property "key.serializer=org.apache.kafka.common.serialization.StringSerializer" \
+                    --property "value.serializer=org.apache.kafka.common.serialization.StringSerializer" > /dev/null 2>&1; then
+                    sent=true
+                fi
+            fi
+            
+            if [ "$sent" = false ]; then
+                retry_count=$((retry_count + 1))
+                if [ $retry_count -lt $max_retries ]; then
+                    log_warning "Failed to send message $message_id, retrying... (attempt $retry_count/$max_retries)"
+                    sleep 0.1
+                fi
+            fi
+        done
+        
+        if [ "$sent" = false ]; then
+            log_error "Failed to send message $message_id after $max_retries attempts"
+        fi
         
         TOTAL_MESSAGES_SENT=$((TOTAL_MESSAGES_SENT + 1))
     done
@@ -152,10 +225,16 @@ monitor_progress() {
     log_info "Monitoring processing progress (checking every ${check_interval}s)..."
     
     while true; do
-        export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"
+        if docker ps | grep -q postgres; then
+            # Use Docker PostgreSQL
+            local current_processed=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs WHERE created_at > NOW() - INTERVAL '10 minutes';")
+        else
+            # Use local PostgreSQL
+            export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"
+            local current_processed=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs WHERE created_at > NOW() - INTERVAL '10 minutes';")
+        fi
         
-        local current_processed=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs WHERE created_at > NOW() - INTERVAL '10 minutes';")
-        current_processed=$(echo $current_processed | tr -d ' ')
+        current_processed=$(echo $current_processed | tr -d ' \n')
         
         local progress_percent=$((current_processed * 100 / expected_total))
         
@@ -173,19 +252,36 @@ monitor_progress() {
 get_performance_metrics() {
     log_info "Collecting performance metrics..."
     
-    export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"
+    if docker ps | grep -q postgres; then
+        # Use Docker PostgreSQL
+        local final_message_logs=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs;")
+        local final_circuit_breaker_events=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM circuit_breaker_events;")
+        local final_retry_attempts=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM retry_attempts;")
+        local final_dlq_messages=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM dead_letter_messages;")
+        
+        # Processing status breakdown
+        local success_count=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs WHERE processing_status = 'SUCCESS' AND created_at > NOW() - INTERVAL '10 minutes';")
+        local failed_count=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs WHERE processing_status = 'FAILED' AND created_at > NOW() - INTERVAL '10 minutes';")
+        local circuit_breaker_count=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs WHERE processing_status = 'CIRCUIT_BREAKER_OPEN' AND created_at > NOW() - INTERVAL '10 minutes';")
+    else
+        # Use local PostgreSQL
+        export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"
+        local final_message_logs=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs;")
+        local final_circuit_breaker_events=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM circuit_breaker_events;")
+        local final_retry_attempts=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM retry_attempts;")
+        local final_dlq_messages=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM dead_letter_messages;")
+        
+        # Processing status breakdown
+        local success_count=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs WHERE processing_status = 'SUCCESS' AND created_at > NOW() - INTERVAL '10 minutes';")
+        local failed_count=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs WHERE processing_status = 'FAILED' AND created_at > NOW() - INTERVAL '10 minutes';")
+        local circuit_breaker_count=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs WHERE processing_status = 'CIRCUIT_BREAKER_OPEN' AND created_at > NOW() - INTERVAL '10 minutes';")
+    fi
     
-    # Database metrics
-    local final_message_logs=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs;")
-    local final_circuit_breaker_events=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM circuit_breaker_events;")
-    local final_retry_attempts=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM retry_attempts;")
-    local final_dlq_messages=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM dead_letter_messages;")
-    
-    # Clean up counts (remove spaces)
-    final_message_logs=$(echo $final_message_logs | tr -d ' ')
-    final_circuit_breaker_events=$(echo $final_circuit_breaker_events | tr -d ' ')
-    final_retry_attempts=$(echo $final_retry_attempts | tr -d ' ')
-    final_dlq_messages=$(echo $final_dlq_messages | tr -d ' ')
+    # Clean up counts (remove spaces and newlines)
+    final_message_logs=$(echo $final_message_logs | tr -d ' \n')
+    final_circuit_breaker_events=$(echo $final_circuit_breaker_events | tr -d ' \n')
+    final_retry_attempts=$(echo $final_retry_attempts | tr -d ' \n')
+    final_dlq_messages=$(echo $final_dlq_messages | tr -d ' \n')
     
     # Calculate deltas
     local new_message_logs=$((final_message_logs - BASELINE_MESSAGE_LOGS))
@@ -193,14 +289,9 @@ get_performance_metrics() {
     local new_retry_attempts=$((final_retry_attempts - BASELINE_RETRY_ATTEMPTS))
     local new_dlq_messages=$((final_dlq_messages - BASELINE_DLQ_MESSAGES))
     
-    # Processing status breakdown
-    local success_count=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs WHERE processing_status = 'SUCCESS' AND created_at > NOW() - INTERVAL '10 minutes';")
-    local failed_count=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs WHERE processing_status = 'FAILED' AND created_at > NOW() - INTERVAL '10 minutes';")
-    local circuit_breaker_count=$(psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs WHERE processing_status = 'CIRCUIT_BREAKER_OPEN' AND created_at > NOW() - INTERVAL '10 minutes';")
-    
-    success_count=$(echo $success_count | tr -d ' ')
-    failed_count=$(echo $failed_count | tr -d ' ')
-    circuit_breaker_count=$(echo $circuit_breaker_count | tr -d ' ')
+    success_count=$(echo $success_count | tr -d ' \n')
+    failed_count=$(echo $failed_count | tr -d ' \n')
+    circuit_breaker_count=$(echo $circuit_breaker_count | tr -d ' \n')
     
     # Calculate processing time
     local total_seconds=$((END_TIME - START_TIME))
@@ -240,36 +331,65 @@ get_performance_metrics() {
 generate_detailed_report() {
     log_info "Generating detailed report..."
     
-    export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"
-    
     echo
     log_performance "=== DETAILED DATABASE REPORT ==="
     echo
     
-    # Recent message logs
-    log_performance "Recent Message Logs (last 10):"
-    psql -U diagnostic_user -d diagnostic_service -c "SELECT message_id, topic, processing_status, processing_time_ms, created_at FROM message_logs ORDER BY created_at DESC LIMIT 10;"
-    echo
-    
-    # Error category breakdown
-    log_performance "Error Category Breakdown:"
-    psql -U diagnostic_user -d diagnostic_service -c "SELECT error_category, COUNT(*) as count FROM message_logs WHERE created_at > NOW() - INTERVAL '10 minutes' AND error_category IS NOT NULL GROUP BY error_category ORDER BY count DESC;"
-    echo
-    
-    # Processing time statistics
-    log_performance "Processing Time Statistics:"
-    psql -U diagnostic_user -d diagnostic_service -c "SELECT processing_status, COUNT(*) as count, AVG(processing_time_ms) as avg_time_ms, MIN(processing_time_ms) as min_time_ms, MAX(processing_time_ms) as max_time_ms FROM message_logs WHERE created_at > NOW() - INTERVAL '10 minutes' AND processing_time_ms IS NOT NULL GROUP BY processing_status ORDER BY count DESC;"
-    echo
-    
-    # Circuit breaker events
-    log_performance "Circuit Breaker Events (last 10):"
-    psql -U diagnostic_user -d diagnostic_service -c "SELECT circuit_breaker_name, event_type, from_state, to_state, created_at FROM circuit_breaker_events ORDER BY created_at DESC LIMIT 10;"
-    echo
-    
-    # Retry attempts summary
-    log_performance "Retry Attempts Summary:"
-    psql -U diagnostic_user -d diagnostic_service -c "SELECT status, COUNT(*) as count, AVG(delay_ms) as avg_delay_ms FROM retry_attempts WHERE created_at > NOW() - INTERVAL '10 minutes' GROUP BY status ORDER BY count DESC;"
-    echo
+    if docker ps | grep -q postgres; then
+        # Use Docker PostgreSQL
+        # Recent message logs
+        log_performance "Recent Message Logs (last 10):"
+        docker exec postgres psql -U diagnostic_user -d diagnostic_service -c "SELECT message_id, topic, processing_status, processing_time_ms, created_at FROM message_logs ORDER BY created_at DESC LIMIT 10;"
+        echo
+        
+        # Error category breakdown
+        log_performance "Error Category Breakdown:"
+        docker exec postgres psql -U diagnostic_user -d diagnostic_service -c "SELECT error_category, COUNT(*) as count FROM message_logs WHERE created_at > NOW() - INTERVAL '10 minutes' AND error_category IS NOT NULL GROUP BY error_category ORDER BY count DESC;"
+        echo
+        
+        # Processing time statistics
+        log_performance "Processing Time Statistics:"
+        docker exec postgres psql -U diagnostic_user -d diagnostic_service -c "SELECT processing_status, COUNT(*) as count, AVG(processing_time_ms) as avg_time_ms, MIN(processing_time_ms) as min_time_ms, MAX(processing_time_ms) as max_time_ms FROM message_logs WHERE created_at > NOW() - INTERVAL '10 minutes' AND processing_time_ms IS NOT NULL GROUP BY processing_status ORDER BY count DESC;"
+        echo
+        
+        # Circuit breaker events
+        log_performance "Circuit Breaker Events (last 10):"
+        docker exec postgres psql -U diagnostic_user -d diagnostic_service -c "SELECT circuit_breaker_name, event_type, from_state, to_state, created_at FROM circuit_breaker_events ORDER BY created_at DESC LIMIT 10;"
+        echo
+        
+        # Retry attempts summary
+        log_performance "Retry Attempts Summary:"
+        docker exec postgres psql -U diagnostic_user -d diagnostic_service -c "SELECT status, COUNT(*) as count, AVG(delay_ms) as avg_delay_ms FROM retry_attempts WHERE created_at > NOW() - INTERVAL '10 minutes' GROUP BY status ORDER BY count DESC;"
+        echo
+    else
+        # Use local PostgreSQL
+        export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"
+        
+        # Recent message logs
+        log_performance "Recent Message Logs (last 10):"
+        psql -U diagnostic_user -d diagnostic_service -c "SELECT message_id, topic, processing_status, processing_time_ms, created_at FROM message_logs ORDER BY created_at DESC LIMIT 10;"
+        echo
+        
+        # Error category breakdown
+        log_performance "Error Category Breakdown:"
+        psql -U diagnostic_user -d diagnostic_service -c "SELECT error_category, COUNT(*) as count FROM message_logs WHERE created_at > NOW() - INTERVAL '10 minutes' AND error_category IS NOT NULL GROUP BY error_category ORDER BY count DESC;"
+        echo
+        
+        # Processing time statistics
+        log_performance "Processing Time Statistics:"
+        psql -U diagnostic_user -d diagnostic_service -c "SELECT processing_status, COUNT(*) as count, AVG(processing_time_ms) as avg_time_ms, MIN(processing_time_ms) as min_time_ms, MAX(processing_time_ms) as max_time_ms FROM message_logs WHERE created_at > NOW() - INTERVAL '10 minutes' AND processing_time_ms IS NOT NULL GROUP BY processing_status ORDER BY count DESC;"
+        echo
+        
+        # Circuit breaker events
+        log_performance "Circuit Breaker Events (last 10):"
+        psql -U diagnostic_user -d diagnostic_service -c "SELECT circuit_breaker_name, event_type, from_state, to_state, created_at FROM circuit_breaker_events ORDER BY created_at DESC LIMIT 10;"
+        echo
+        
+        # Retry attempts summary
+        log_performance "Retry Attempts Summary:"
+        psql -U diagnostic_user -d diagnostic_service -c "SELECT status, COUNT(*) as count, AVG(delay_ms) as avg_delay_ms FROM retry_attempts WHERE created_at > NOW() - INTERVAL '10 minutes' GROUP BY status ORDER BY count DESC;"
+        echo
+    fi
 }
 
 # Main performance test

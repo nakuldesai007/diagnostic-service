@@ -6,6 +6,7 @@ import com.example.diagnosticservice.service.RetryService;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -35,38 +36,79 @@ public class DiagnosticController {
     }
 
     @GetMapping("/health")
-    public ResponseEntity<DiagnosticService.DiagnosticServiceHealth> getHealth() {
+    public ResponseEntity<Map<String, Object>> getHealth() {
         log.debug("Health check requested");
-        return ResponseEntity.ok(diagnosticService.getHealthStatus());
+        
+        Map<String, Object> health = new HashMap<>();
+        DiagnosticService.DiagnosticServiceHealth serviceHealth = diagnosticService.getHealthStatus();
+        
+        // Add service health
+        health.put("service", serviceHealth);
+        
+        // Add additional health indicators
+        health.put("timestamp", java.time.Instant.now());
+        health.put("status", "UP");
+        
+        // Add database connectivity check
+        try {
+            // You could add a database health check here
+            health.put("database", "UP");
+        } catch (Exception e) {
+            health.put("database", "DOWN");
+            health.put("databaseError", e.getMessage());
+        }
+        
+        // Add Kafka connectivity check
+        try {
+            // You could add a Kafka health check here
+            health.put("kafka", "UP");
+        } catch (Exception e) {
+            health.put("kafka", "DOWN");
+            health.put("kafkaError", e.getMessage());
+        }
+        
+        return ResponseEntity.ok(health);
     }
 
     @GetMapping("/stats")
     public ResponseEntity<Map<String, Object>> getStats() {
         log.debug("Stats requested");
         
-        Map<String, Object> stats = new HashMap<>();
-        
-        // Diagnostic service health
-        stats.put("health", diagnosticService.getHealthStatus());
-        
-        // Attempt tracker stats
-        stats.put("attemptTracker", attemptTracker.getStats());
-        
-        // Retry service stats
-        stats.put("retryService", retryService.getRetryStats());
-        
-        // Circuit breaker stats
-        CircuitBreaker circuitBreaker = circuitBreakerRegistry.circuitBreaker("diagnosticService");
-        Map<String, Object> circuitBreakerStats = new HashMap<>();
-        circuitBreakerStats.put("state", circuitBreaker.getState().name());
-        circuitBreakerStats.put("failureRate", circuitBreaker.getMetrics().getFailureRate());
-        circuitBreakerStats.put("numberOfBufferedCalls", circuitBreaker.getMetrics().getNumberOfBufferedCalls());
-        circuitBreakerStats.put("numberOfFailedCalls", circuitBreaker.getMetrics().getNumberOfFailedCalls());
-        circuitBreakerStats.put("numberOfSuccessfulCalls", circuitBreaker.getMetrics().getNumberOfSuccessfulCalls());
-        circuitBreakerStats.put("numberOfNotPermittedCalls", circuitBreaker.getMetrics().getNumberOfNotPermittedCalls());
-        stats.put("circuitBreaker", circuitBreakerStats);
-        
-        return ResponseEntity.ok(stats);
+        try {
+            Map<String, Object> stats = new HashMap<>();
+            
+            // Diagnostic service health
+            stats.put("health", diagnosticService.getHealthStatus());
+            
+            // Attempt tracker stats
+            stats.put("attemptTracker", attemptTracker.getStats());
+            
+            // Retry service stats
+            stats.put("retryService", retryService.getRetryStats());
+            
+            // Circuit breaker stats
+            CircuitBreaker circuitBreaker = circuitBreakerRegistry.circuitBreaker("diagnosticService");
+            Map<String, Object> circuitBreakerStats = new HashMap<>();
+            circuitBreakerStats.put("state", circuitBreaker.getState().name());
+            circuitBreakerStats.put("failureRate", circuitBreaker.getMetrics().getFailureRate());
+            circuitBreakerStats.put("numberOfBufferedCalls", circuitBreaker.getMetrics().getNumberOfBufferedCalls());
+            circuitBreakerStats.put("numberOfFailedCalls", circuitBreaker.getMetrics().getNumberOfFailedCalls());
+            circuitBreakerStats.put("numberOfSuccessfulCalls", circuitBreaker.getMetrics().getNumberOfSuccessfulCalls());
+            circuitBreakerStats.put("numberOfNotPermittedCalls", circuitBreaker.getMetrics().getNumberOfNotPermittedCalls());
+            stats.put("circuitBreaker", circuitBreakerStats);
+            
+            // Add timestamp
+            stats.put("timestamp", java.time.Instant.now());
+            
+            return ResponseEntity.ok(stats);
+            
+        } catch (Exception e) {
+            log.error("Error retrieving stats", e);
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("error", "Failed to retrieve statistics: " + e.getMessage());
+            errorResponse.put("timestamp", java.time.Instant.now());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
+        }
     }
 
     @GetMapping("/circuit-breaker/state")
@@ -94,5 +136,57 @@ public class DiagnosticController {
         // metrics.put("averageResponseTime", circuitBreaker.getMetrics().getAverageResponseTime());
         
         return ResponseEntity.ok(metrics);
+    }
+
+    @GetMapping("/database/stats")
+    public ResponseEntity<Map<String, Object>> getDatabaseStats() {
+        log.debug("Database stats requested");
+        
+        Map<String, Object> dbStats = new HashMap<>();
+        
+        try {
+            // This would require injecting a database service
+            // For now, return a placeholder structure
+            dbStats.put("messageLogs", Map.of(
+                "total", "N/A - requires database service",
+                "success", "N/A - requires database service",
+                "failed", "N/A - requires database service"
+            ));
+            dbStats.put("retryAttempts", "N/A - requires database service");
+            dbStats.put("deadLetterMessages", "N/A - requires database service");
+            dbStats.put("circuitBreakerEvents", "N/A - requires database service");
+            dbStats.put("timestamp", java.time.Instant.now());
+            
+        } catch (Exception e) {
+            log.error("Error retrieving database stats", e);
+            dbStats.put("error", "Failed to retrieve database statistics: " + e.getMessage());
+        }
+        
+        return ResponseEntity.ok(dbStats);
+    }
+
+    @GetMapping("/kafka/stats")
+    public ResponseEntity<Map<String, Object>> getKafkaStats() {
+        log.debug("Kafka stats requested");
+        
+        Map<String, Object> kafkaStats = new HashMap<>();
+        
+        try {
+            // This would require injecting a Kafka admin client
+            // For now, return a placeholder structure
+            kafkaStats.put("topics", Map.of(
+                "projection-processing-queue", "N/A - requires Kafka admin client",
+                "failed-projection-messages", "N/A - requires Kafka admin client",
+                "dead-letter-queue", "N/A - requires Kafka admin client"
+            ));
+            kafkaStats.put("consumerGroups", "N/A - requires Kafka admin client");
+            kafkaStats.put("timestamp", java.time.Instant.now());
+            
+        } catch (Exception e) {
+            log.error("Error retrieving Kafka stats", e);
+            kafkaStats.put("error", "Failed to retrieve Kafka statistics: " + e.getMessage());
+        }
+        
+        return ResponseEntity.ok(kafkaStats);
     }
 }

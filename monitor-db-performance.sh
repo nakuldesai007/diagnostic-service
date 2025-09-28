@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# PostgreSQL Performance Monitoring Script
-# Monitors database performance during the 1000 message test
+# Database Performance Monitor Script
+# This script monitors database performance and shows real-time statistics
 
 set -e
 
-echo "📊 Starting PostgreSQL Performance Monitoring"
-echo "============================================"
+echo "📊 Database Performance Monitor"
+echo "=============================="
 
 # Colors for output
 RED='\033[0;31m'
@@ -14,203 +14,180 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
 NC='\033[0m' # No Color
-
-# Configuration
-DB_USER="diagnostic_user"
-DB_NAME="diagnostic_service"
-MONITOR_INTERVAL=5
-LOG_FILE="db-performance-$(date +%Y%m%d-%H%M%S).log"
-
-# Set PostgreSQL path
-export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"
 
 # Helper functions
 log_info() {
-    local message="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
     echo -e "${BLUE}[INFO]${NC} $1"
-    echo "$message" >> "$LOG_FILE"
 }
 
-log_performance() {
-    local message="[$(date '+%Y-%m-%d %H:%M:%S')] PERF: $1"
-    echo -e "${PURPLE}[PERF]${NC} $1"
-    echo "$message" >> "$LOG_FILE"
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+log_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
 }
 
 log_error() {
-    local message="[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $1"
     echo -e "${RED}[ERROR]${NC} $1"
-    echo "$message" >> "$LOG_FILE"
 }
 
-# Get initial database state
-get_initial_state() {
-    log_info "Getting initial database state..."
-    
-    INITIAL_MESSAGE_LOGS=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM message_logs;" | tr -d ' ')
-    INITIAL_CIRCUIT_BREAKER_EVENTS=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM circuit_breaker_events;" | tr -d ' ')
-    INITIAL_RETRY_ATTEMPTS=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM retry_attempts;" | tr -d ' ')
-    INITIAL_DLQ_MESSAGES=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM dead_letter_messages;" | tr -d ' ')
-    
-    log_performance "Initial counts:"
-    log_performance "  Message Logs: $INITIAL_MESSAGE_LOGS"
-    log_performance "  Circuit Breaker Events: $INITIAL_CIRCUIT_BREAKER_EVENTS"
-    log_performance "  Retry Attempts: $INITIAL_RETRY_ATTEMPTS"
-    log_performance "  DLQ Messages: $INITIAL_DLQ_MESSAGES"
-    echo
+log_metric() {
+    echo -e "${PURPLE}[METRIC]${NC} $1"
 }
 
-# Monitor database connections
-monitor_connections() {
-    local connections=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = '$DB_NAME';" | tr -d ' ')
-    local active_connections=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = '$DB_NAME' AND state = 'active';" | tr -d ' ')
-    
-    log_performance "Connections: Total=$connections, Active=$active_connections"
-}
+# Configuration
+INTERVAL=${1:-5}  # Default 5 seconds
+DURATION=${2:-60} # Default 60 seconds
 
-# Monitor table sizes
-monitor_table_sizes() {
-    local message_logs_size=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT pg_size_pretty(pg_total_relation_size('message_logs'));" | tr -d ' ')
-    local cb_events_size=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT pg_size_pretty(pg_total_relation_size('circuit_breaker_events'));" | tr -d ' ')
-    local retry_attempts_size=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT pg_size_pretty(pg_total_relation_size('retry_attempts'));" | tr -d ' ')
-    local dlq_size=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT pg_size_pretty(pg_total_relation_size('dead_letter_messages'));" | tr -d ' ')
-    
-    log_performance "Table Sizes: message_logs=$message_logs_size, cb_events=$cb_events_size, retry_attempts=$retry_attempts_size, dlq=$dlq_size"
-}
-
-# Monitor insert rates
-monitor_insert_rates() {
-    local current_message_logs=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM message_logs;" | tr -d ' ')
-    local current_cb_events=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM circuit_breaker_events;" | tr -d ' ')
-    local current_retry_attempts=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM retry_attempts;" | tr -d ' ')
-    local current_dlq=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM dead_letter_messages;" | tr -d ' ')
-    
-    local new_message_logs=$((current_message_logs - INITIAL_MESSAGE_LOGS))
-    local new_cb_events=$((current_cb_events - INITIAL_CIRCUIT_BREAKER_EVENTS))
-    local new_retry_attempts=$((current_retry_attempts - INITIAL_RETRY_ATTEMPTS))
-    local new_dlq=$((current_dlq - INITIAL_DLQ_MESSAGES))
-    
-    log_performance "New Records: message_logs=+$new_message_logs, cb_events=+$new_cb_events, retry_attempts=+$new_retry_attempts, dlq=+$new_dlq"
-}
-
-# Monitor recent activity
-monitor_recent_activity() {
-    local recent_messages=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM message_logs WHERE created_at > NOW() - INTERVAL '1 minute';" | tr -d ' ')
-    local recent_processing=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM message_logs WHERE processed_at > NOW() - INTERVAL '1 minute';" | tr -d ' ')
-    
-    log_performance "Recent Activity (last 1 min): Messages=$recent_messages, Processed=$recent_processing"
-}
-
-# Monitor database performance metrics
-monitor_db_performance() {
-    # Get database statistics
-    local db_size=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT pg_size_pretty(pg_database_size('$DB_NAME'));" | tr -d ' ')
-    
-    # Get cache hit ratio
-    local cache_hit_ratio=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT round(100.0 * sum(blks_hit) / (sum(blks_hit) + sum(blks_read)), 2) FROM pg_stat_database WHERE datname = '$DB_NAME';" | tr -d ' ')
-    
-    # Get transaction statistics
-    local transactions=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT xact_commit + xact_rollback FROM pg_stat_database WHERE datname = '$DB_NAME';" | tr -d ' ')
-    
-    log_performance "DB Performance: Size=$db_size, Cache Hit Ratio=${cache_hit_ratio}%, Total Transactions=$transactions"
-}
-
-# Monitor slow queries
-monitor_slow_queries() {
-    local slow_queries=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM pg_stat_statements WHERE mean_exec_time > 1000;" 2>/dev/null | tr -d ' ' || echo "N/A")
-    log_performance "Slow Queries (>1s): $slow_queries"
-}
-
-# Monitor locks
-monitor_locks() {
-    local lock_count=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM pg_locks WHERE NOT granted;" | tr -d ' ')
-    if [ "$lock_count" -gt 0 ]; then
-        log_performance "⚠️  Blocked Locks: $lock_count"
+# Check if PostgreSQL is running
+check_postgres() {
+    if docker ps | grep -q postgres; then
+        if docker exec postgres psql -U diagnostic_user -d diagnostic_service -c "SELECT 1;" > /dev/null 2>&1; then
+            return 0
+        else
+            log_error "PostgreSQL container is running but not accessible"
+            return 1
+        fi
+    else
+        log_error "PostgreSQL container not found. Make sure to run ./setup-test-environment.sh first"
+        return 1
     fi
 }
 
-# Main monitoring loop
+# Get database statistics
+get_db_stats() {
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    # Get table counts
+    local message_logs=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs;" 2>/dev/null | tr -d ' \n')
+    local circuit_breaker_events=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM circuit_breaker_events;" 2>/dev/null | tr -d ' \n')
+    local retry_attempts=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM retry_attempts;" 2>/dev/null | tr -d ' \n')
+    local dlq_messages=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM dead_letter_messages;" 2>/dev/null | tr -d ' \n')
+    
+    # Get recent activity (last 5 minutes)
+    local recent_logs=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs WHERE created_at > NOW() - INTERVAL '5 minutes';" 2>/dev/null | tr -d ' \n')
+    local recent_events=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM circuit_breaker_events WHERE created_at > NOW() - INTERVAL '5 minutes';" 2>/dev/null | tr -d ' \n')
+    local recent_retries=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM retry_attempts WHERE created_at > NOW() - INTERVAL '5 minutes';" 2>/dev/null | tr -d ' \n')
+    local recent_dlq=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM dead_letter_messages WHERE created_at > NOW() - INTERVAL '5 minutes';" 2>/dev/null | tr -d ' \n')
+    
+    # Get processing status breakdown
+    local success_count=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs WHERE processing_status = 'SUCCESS' AND created_at > NOW() - INTERVAL '5 minutes';" 2>/dev/null | tr -d ' \n')
+    local failed_count=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs WHERE processing_status = 'FAILED' AND created_at > NOW() - INTERVAL '5 minutes';" 2>/dev/null | tr -d ' \n')
+    local circuit_breaker_count=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT COUNT(*) FROM message_logs WHERE processing_status = 'CIRCUIT_BREAKER_OPEN' AND created_at > NOW() - INTERVAL '5 minutes';" 2>/dev/null | tr -d ' \n')
+    
+    # Get average processing time
+    local avg_processing_time=$(docker exec postgres psql -U diagnostic_user -d diagnostic_service -t -c "SELECT ROUND(AVG(processing_time_ms), 2) FROM message_logs WHERE processing_time_ms IS NOT NULL AND created_at > NOW() - INTERVAL '5 minutes';" 2>/dev/null | tr -d ' \n')
+    
+    # Display statistics
+    echo "┌─────────────────────────────────────────────────────────────────┐"
+    echo "│ Database Performance Monitor - $timestamp"
+    echo "├─────────────────────────────────────────────────────────────────┤"
+    echo "│ Total Records:"
+    echo "│   Message Logs: $message_logs"
+    echo "│   Circuit Breaker Events: $circuit_breaker_events"
+    echo "│   Retry Attempts: $retry_attempts"
+    echo "│   Dead Letter Messages: $dlq_messages"
+    echo "├─────────────────────────────────────────────────────────────────┤"
+    echo "│ Recent Activity (Last 5 minutes):"
+    echo "│   Message Logs: $recent_logs"
+    echo "│   Circuit Breaker Events: $recent_events"
+    echo "│   Retry Attempts: $recent_retries"
+    echo "│   Dead Letter Messages: $recent_dlq"
+    echo "├─────────────────────────────────────────────────────────────────┤"
+    echo "│ Processing Status (Last 5 minutes):"
+    echo "│   Successful: $success_count"
+    echo "│   Failed: $failed_count"
+    echo "│   Circuit Breaker Open: $circuit_breaker_count"
+    echo "│   Avg Processing Time: ${avg_processing_time}ms"
+    echo "└─────────────────────────────────────────────────────────────────┘"
+    echo
+}
+
+# Get detailed performance metrics
+get_detailed_metrics() {
+    log_metric "Detailed Performance Metrics:"
+    echo "----------------------------------------"
+    
+    # Top error categories
+    echo "Top Error Categories (Last 5 minutes):"
+    docker exec postgres psql -U diagnostic_user -d diagnostic_service -c "SELECT error_category, COUNT(*) as count FROM message_logs WHERE created_at > NOW() - INTERVAL '5 minutes' AND error_category IS NOT NULL GROUP BY error_category ORDER BY count DESC LIMIT 5;"
+    echo
+    
+    # Processing time statistics
+    echo "Processing Time Statistics (Last 5 minutes):"
+    docker exec postgres psql -U diagnostic_user -d diagnostic_service -c "SELECT processing_status, COUNT(*) as count, ROUND(AVG(processing_time_ms), 2) as avg_time_ms, MIN(processing_time_ms) as min_time_ms, MAX(processing_time_ms) as max_time_ms FROM message_logs WHERE created_at > NOW() - INTERVAL '5 minutes' AND processing_time_ms IS NOT NULL GROUP BY processing_status ORDER BY count DESC;"
+    echo
+    
+    # Recent circuit breaker events
+    echo "Recent Circuit Breaker Events (Last 10):"
+    docker exec postgres psql -U diagnostic_user -d diagnostic_service -c "SELECT circuit_breaker_name, event_type, from_state, to_state, created_at FROM circuit_breaker_events ORDER BY created_at DESC LIMIT 10;"
+    echo
+}
+
+# Monitor loop
 monitor_loop() {
-    log_info "Starting monitoring loop (interval: ${MONITOR_INTERVAL}s)..."
-    log_info "Logging to: $LOG_FILE"
+    local start_time=$(date +%s)
+    local end_time=$((start_time + DURATION))
+    
+    log_info "Starting database performance monitoring..."
+    log_info "Interval: ${INTERVAL}s, Duration: ${DURATION}s"
     echo
     
-    local iteration=0
-    
-    while true; do
-        iteration=$((iteration + 1))
-        
-        echo -e "${CYAN}=== Monitoring Iteration $iteration ($(date '+%H:%M:%S')) ===${NC}"
-        
-        monitor_connections
-        monitor_table_sizes
-        monitor_insert_rates
-        monitor_recent_activity
-        monitor_db_performance
-        monitor_slow_queries
-        monitor_locks
-        
-        echo
-        
-        sleep $MONITOR_INTERVAL
+    while [ $(date +%s) -lt $end_time ]; do
+        get_db_stats
+        sleep $INTERVAL
     done
+    
+    log_success "Monitoring completed"
+    echo
+    get_detailed_metrics
 }
 
-# Generate final report
-generate_final_report() {
-    log_info "Generating final performance report..."
-    
-    local final_message_logs=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM message_logs;" | tr -d ' ')
-    local final_cb_events=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM circuit_breaker_events;" | tr -d ' ')
-    local final_retry_attempts=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM retry_attempts;" | tr -d ' ')
-    local final_dlq=$(psql -U $DB_USER -d $DB_NAME -t -c "SELECT COUNT(*) FROM dead_letter_messages;" | tr -d ' ')
-    
+# Show help
+show_help() {
+    echo "Usage: $0 [INTERVAL] [DURATION]"
     echo
-    echo -e "${GREEN}=== FINAL PERFORMANCE REPORT ===${NC}"
-    echo "Final Database State:"
-    echo "  Message Logs: $final_message_logs (+$((final_message_logs - INITIAL_MESSAGE_LOGS)))"
-    echo "  Circuit Breaker Events: $final_cb_events (+$((final_cb_events - INITIAL_CIRCUIT_BREAKER_EVENTS)))"
-    echo "  Retry Attempts: $final_retry_attempts (+$((final_retry_attempts - INITIAL_RETRY_ATTEMPTS)))"
-    echo "  DLQ Messages: $final_dlq (+$((final_dlq - INITIAL_DLQ_MESSAGES)))"
+    echo "Arguments:"
+    echo "  INTERVAL    Update interval in seconds (default: 5)"
+    echo "  DURATION    Total monitoring duration in seconds (default: 60)"
     echo
-    
-    # Performance summary
-    local total_new_records=$((final_message_logs - INITIAL_MESSAGE_LOGS + final_cb_events - INITIAL_CIRCUIT_BREAKER_EVENTS + final_retry_attempts - INITIAL_RETRY_ATTEMPTS + final_dlq - INITIAL_DLQ_MESSAGES))
-    echo "Total New Records Created: $total_new_records"
-    echo "Performance Log: $LOG_FILE"
+    echo "Examples:"
+    echo "  $0                    # Monitor for 60 seconds with 5-second intervals"
+    echo "  $0 2 30              # Monitor for 30 seconds with 2-second intervals"
+    echo "  $0 10 120            # Monitor for 2 minutes with 10-second intervals"
+    echo
+    echo "Press Ctrl+C to stop monitoring early"
 }
-
-# Handle cleanup on exit
-cleanup() {
-    echo
-    log_info "Monitoring stopped. Generating final report..."
-    generate_final_report
-    echo
-    log_info "Database performance monitoring completed!"
-}
-
-# Set up signal handlers
-trap cleanup EXIT INT TERM
 
 # Main execution
 main() {
-    echo "Starting database performance monitoring at $(date)"
-    echo
+    # Parse arguments
+    if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+        show_help
+        exit 0
+    fi
     
-    get_initial_state
+    if [ $# -gt 0 ]; then
+        INTERVAL=$1
+    fi
+    
+    if [ $# -gt 1 ]; then
+        DURATION=$2
+    fi
+    
+    # Check if PostgreSQL is running
+    if ! check_postgres; then
+        exit 1
+    fi
+    
+    # Start monitoring
     monitor_loop
 }
 
-# Check if running in background mode
-if [ "$1" = "--background" ]; then
-    echo "Starting monitoring in background..."
-    nohup "$0" > "monitor-$(date +%Y%m%d-%H%M%S).out" 2>&1 &
-    echo "Monitoring started in background. PID: $!"
-    echo "Log file: $LOG_FILE"
-    exit 0
-fi
+# Handle Ctrl+C
+trap 'echo; log_info "Monitoring stopped by user"; exit 0' INT
 
 # Run main function
 main "$@"

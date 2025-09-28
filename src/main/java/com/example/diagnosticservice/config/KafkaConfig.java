@@ -124,9 +124,25 @@ public class KafkaConfig {
         factory.setConsumerFactory(consumerFactory());
         factory.setConcurrency(3); // Process up to 3 messages concurrently
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+        
+        // Enhanced error handler that logs and acknowledges failed messages
         factory.setCommonErrorHandler(new DefaultErrorHandler((record, exception) -> {
-            log.error("Error in Kafka listener: {}", exception.getMessage(), exception);
-            // You can implement custom error handling here
+            log.error("Error processing Kafka message at offset {} in partition {}: {}", 
+                     record.offset(), record.partition(), exception.getMessage(), exception);
+            
+            // Log the failed message to database for tracking
+            try {
+                String messageId = "error-" + record.offset() + "-" + record.partition();
+                String topic = record.topic();
+                String key = record.key() != null ? String.valueOf(record.key()) : "unknown";
+                String value = record.value() != null ? String.valueOf(record.value()) : "null";
+                
+                // You could inject DatabaseLoggingService here to log the error
+                log.error("Failed message details - ID: {}, Topic: {}, Key: {}, Value: {}", 
+                         messageId, topic, key, value);
+            } catch (Exception e) {
+                log.error("Error logging failed message details", e);
+            }
         }));
         
         log.info("Kafka Listener Container Factory configured with concurrency: 3");

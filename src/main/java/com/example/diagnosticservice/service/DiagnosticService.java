@@ -3,6 +3,8 @@ package com.example.diagnosticservice.service;
 import com.example.diagnosticservice.model.DeadLetterMessage;
 import com.example.diagnosticservice.model.FailedProjectionMessage;
 import com.example.diagnosticservice.model.ProjectionMessage;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import lombok.extern.slf4j.Slf4j;
@@ -381,6 +383,55 @@ public class DiagnosticService {
 
         public double getAverageAttemptsPerMessage() {
             return averageAttemptsPerMessage;
+        }
+    }
+
+    // Fallback consumer for messages that fail deserialization
+    @KafkaListener(topics = "${kafka.topics.projection-processing-queue:projection-processing-queue}", 
+                   containerFactory = "stringKafkaListenerContainerFactory",
+                   groupId = "diagnostic-service-fallback-group")
+    public void handleRawMessage(
+            @Payload String rawMessage,
+            @Header(KafkaHeaders.RECEIVED_TOPIC) String topic,
+            @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
+            @Header(KafkaHeaders.RECEIVED_KEY) String key,
+            @Header(KafkaHeaders.OFFSET) long offset,
+            Acknowledgment acknowledgment) {
+        
+        String messageId = "raw-" + offset + "-" + partition;
+        
+        log.warn("Processing raw message (deserialization failed): {} from topic: {}, partition: {}, offset: {}", 
+                messageId, topic, partition, offset);
+        
+        try {
+            // Try to parse the raw message as JSON
+            ObjectMapper mapper = new ObjectMapper();
+            mapper.registerModule(new JavaTimeModule());
+            ProjectionMessage message = mapper.readValue(rawMessage, ProjectionMessage.class);
+            
+            // If successful, process it normally
+            handleProjectionMessage(message, topic, partition, key, offset, acknowledgment);
+            
+        } catch (Exception e) {
+            log.error("Failed to parse raw message: {}", rawMessage, e);
+            
+            // Log the failed message to database
+            databaseLoggingService.logMessageReceived(
+                messageId, topic, partition, offset, 
+                key != null ? key : "unknown", 
+                rawMessage, 
+                "Deserialization failed: " + e.getMessage()
+            );
+            
+            databaseLoggingService.logMessageProcessing(
+                messageId, "FAILED", null, 
+                circuitBreaker.getState().name(), 0L, 
+                "Deserialization failed: " + e.getMessage()
+            );
+            
+            // Send to failed projection messages topic
+            sendToFailedProjectionTopic(messageId, rawMessage, "Deserialization failed: " + e.getMessage(), topic, partition, offset);
+            acknowledgment.acknowledge();
         }
     }
 }

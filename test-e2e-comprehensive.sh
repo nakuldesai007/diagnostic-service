@@ -46,13 +46,37 @@ check_services() {
     # Check if application is running
     if ! curl -s "$API_BASE/actuator/health" > /dev/null; then
         log_error "Application is not running on $API_BASE"
+        log_info "Make sure to run ./setup-test-environment.sh first"
         exit 1
     fi
     
-    # Check if Kafka is running
-    if ! /opt/homebrew/opt/kafka/bin/kafka-topics --bootstrap-server $KAFKA_BOOTSTRAP --list > /dev/null 2>&1; then
-        log_error "Kafka is not running on $KAFKA_BOOTSTRAP"
-        exit 1
+    # Check if Kafka is running (try both local and Docker)
+    if command -v /opt/homebrew/opt/kafka/bin/kafka-topics > /dev/null 2>&1; then
+        # Local Kafka installation
+        if ! /opt/homebrew/opt/kafka/bin/kafka-topics --bootstrap-server $KAFKA_BOOTSTRAP --list > /dev/null 2>&1; then
+            log_error "Local Kafka is not running on $KAFKA_BOOTSTRAP"
+            log_info "Make sure to run ./setup-test-environment.sh first"
+            exit 1
+        fi
+    else
+        # Docker Kafka
+        if ! docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list > /dev/null 2>&1; then
+            log_error "Docker Kafka is not running"
+            log_info "Make sure to run ./setup-test-environment.sh first"
+            exit 1
+        fi
+    fi
+    
+    # Check if PostgreSQL is accessible
+    if docker ps | grep -q postgres; then
+        if ! docker exec postgres psql -U diagnostic_user -d diagnostic_service -c "SELECT 1;" > /dev/null 2>&1; then
+            log_error "PostgreSQL is not accessible"
+            log_info "Make sure to run ./setup-test-environment.sh first"
+            exit 1
+        fi
+        log_success "PostgreSQL is accessible"
+    else
+        log_warning "PostgreSQL container not found, using local connection"
     fi
     
     log_success "All services are running"
@@ -64,19 +88,38 @@ send_message() {
     local message=$2
     local key=$3
     
-    if [ -n "$key" ]; then
-        echo "$key:$message" | /opt/homebrew/opt/kafka/bin/kafka-console-producer \
-            --bootstrap-server $KAFKA_BOOTSTRAP \
-            --topic $topic \
-            --property "key.separator=:" \
-            --property "parse.key=true" \
-            --property "key.serializer=org.apache.kafka.common.serialization.StringSerializer" \
-            --property "value.serializer=org.apache.kafka.common.serialization.StringSerializer"
+    if command -v /opt/homebrew/opt/kafka/bin/kafka-console-producer > /dev/null 2>&1; then
+        # Local Kafka installation
+        if [ -n "$key" ]; then
+            echo "$key:$message" | /opt/homebrew/opt/kafka/bin/kafka-console-producer \
+                --bootstrap-server $KAFKA_BOOTSTRAP \
+                --topic $topic \
+                --property "key.separator=:" \
+                --property "parse.key=true" \
+                --property "key.serializer=org.apache.kafka.common.serialization.StringSerializer" \
+                --property "value.serializer=org.apache.kafka.common.serialization.StringSerializer"
+        else
+            echo "$message" | /opt/homebrew/opt/kafka/bin/kafka-console-producer \
+                --bootstrap-server $KAFKA_BOOTSTRAP \
+                --topic $topic \
+                --property "value.serializer=org.apache.kafka.common.serialization.StringSerializer"
+        fi
     else
-        echo "$message" | /opt/homebrew/opt/kafka/bin/kafka-console-producer \
-            --bootstrap-server $KAFKA_BOOTSTRAP \
-            --topic $topic \
-            --property "value.serializer=org.apache.kafka.common.serialization.StringSerializer"
+        # Docker Kafka
+        if [ -n "$key" ]; then
+            echo "$key:$message" | docker exec -i kafka kafka-console-producer \
+                --bootstrap-server localhost:9092 \
+                --topic $topic \
+                --property "key.separator=:" \
+                --property "parse.key=true" \
+                --property "key.serializer=org.apache.kafka.common.serialization.StringSerializer" \
+                --property "value.serializer=org.apache.kafka.common.serialization.StringSerializer"
+        else
+            echo "$message" | docker exec -i kafka kafka-console-producer \
+                --bootstrap-server localhost:9092 \
+                --topic $topic \
+                --property "value.serializer=org.apache.kafka.common.serialization.StringSerializer"
+        fi
     fi
 }
 
@@ -265,19 +308,35 @@ check_database_state() {
     log_info "Checking database state..."
     echo "----------------------------------------"
     
-    export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"
-    
-    log_info "Message logs (last 10):"
-    psql -U diagnostic_user -d diagnostic_service -c "SELECT message_id, topic, processing_status, created_at FROM message_logs ORDER BY created_at DESC LIMIT 10;"
-    
-    log_info "Circuit breaker events (last 5):"
-    psql -U diagnostic_user -d diagnostic_service -c "SELECT circuit_breaker_name, event_type, created_at FROM circuit_breaker_events ORDER BY created_at DESC LIMIT 5;"
-    
-    log_info "Retry attempts (last 5):"
-    psql -U diagnostic_user -d diagnostic_service -c "SELECT message_id, attempt_number, error_message, created_at FROM retry_attempts ORDER BY created_at DESC LIMIT 5;"
-    
-    log_info "Dead letter messages (last 5):"
-    psql -U diagnostic_user -d diagnostic_service -c "SELECT message_id, source_topic, failure_reason, created_at FROM dead_letter_messages ORDER BY created_at DESC LIMIT 5;"
+    if docker ps | grep -q postgres; then
+        # Use Docker PostgreSQL
+        log_info "Message logs (last 10):"
+        docker exec postgres psql -U diagnostic_user -d diagnostic_service -c "SELECT message_id, topic, processing_status, created_at FROM message_logs ORDER BY created_at DESC LIMIT 10;"
+        
+        log_info "Circuit breaker events (last 5):"
+        docker exec postgres psql -U diagnostic_user -d diagnostic_service -c "SELECT circuit_breaker_name, event_type, created_at FROM circuit_breaker_events ORDER BY created_at DESC LIMIT 5;"
+        
+        log_info "Retry attempts (last 5):"
+        docker exec postgres psql -U diagnostic_user -d diagnostic_service -c "SELECT message_id, attempt_number, error_message, created_at FROM retry_attempts ORDER BY created_at DESC LIMIT 5;"
+        
+        log_info "Dead letter messages (last 5):"
+        docker exec postgres psql -U diagnostic_user -d diagnostic_service -c "SELECT message_id, source_topic, failure_reason, created_at FROM dead_letter_messages ORDER BY created_at DESC LIMIT 5;"
+    else
+        # Use local PostgreSQL
+        export PATH="/opt/homebrew/opt/postgresql@15/bin:$PATH"
+        
+        log_info "Message logs (last 10):"
+        psql -U diagnostic_user -d diagnostic_service -c "SELECT message_id, topic, processing_status, created_at FROM message_logs ORDER BY created_at DESC LIMIT 10;"
+        
+        log_info "Circuit breaker events (last 5):"
+        psql -U diagnostic_user -d diagnostic_service -c "SELECT circuit_breaker_name, event_type, created_at FROM circuit_breaker_events ORDER BY created_at DESC LIMIT 5;"
+        
+        log_info "Retry attempts (last 5):"
+        psql -U diagnostic_user -d diagnostic_service -c "SELECT message_id, attempt_number, error_message, created_at FROM retry_attempts ORDER BY created_at DESC LIMIT 5;"
+        
+        log_info "Dead letter messages (last 5):"
+        psql -U diagnostic_user -d diagnostic_service -c "SELECT message_id, source_topic, failure_reason, created_at FROM dead_letter_messages ORDER BY created_at DESC LIMIT 5;"
+    fi
 }
 
 # Main execution
