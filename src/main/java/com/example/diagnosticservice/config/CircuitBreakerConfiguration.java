@@ -1,5 +1,6 @@
 package com.example.diagnosticservice.config;
 
+import com.example.diagnosticservice.service.DatabaseLoggingService;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
@@ -59,7 +60,8 @@ public class CircuitBreakerConfiguration {
     }
 
     @Bean
-    public CircuitBreaker diagnosticServiceCircuitBreaker(CircuitBreakerRegistry circuitBreakerRegistry) {
+    public CircuitBreaker diagnosticServiceCircuitBreaker(CircuitBreakerRegistry circuitBreakerRegistry,
+                                                         DatabaseLoggingService databaseLoggingService) {
         CircuitBreaker circuitBreaker = circuitBreakerRegistry.circuitBreaker("diagnosticService");
         
         // Add event listeners for monitoring
@@ -68,15 +70,50 @@ public class CircuitBreakerConfiguration {
                     log.info("Circuit Breaker state transition: {} -> {}", 
                             event.getStateTransition().getFromState(), 
                             event.getStateTransition().getToState());
+                    
+                    // Log to database
+                    databaseLoggingService.logCircuitBreakerEvent(
+                        "diagnosticService", "STATE_TRANSITION",
+                        event.getStateTransition().getFromState().name(),
+                        event.getStateTransition().getToState().name(),
+                        null, null, null, null, null,
+                        String.format("State transition from %s to %s", 
+                            event.getStateTransition().getFromState(), 
+                            event.getStateTransition().getToState())
+                    );
                 })
                 .onFailureRateExceeded(event -> {
                     log.warn("Circuit Breaker failure rate exceeded: {}%", event.getFailureRate());
+                    
+                    // Log to database
+                    databaseLoggingService.logCircuitBreakerEvent(
+                        "diagnosticService", "FAILURE_RATE_EXCEEDED",
+                        null, null, (double) event.getFailureRate(), null,
+                        null, null, null,
+                        String.format("Failure rate exceeded: %.2f%%", event.getFailureRate())
+                    );
                 })
                 .onSlowCallRateExceeded(event -> {
                     log.warn("Circuit Breaker slow call rate exceeded: {}%", event.getSlowCallRate());
+                    
+                    // Log to database
+                    databaseLoggingService.logCircuitBreakerEvent(
+                        "diagnosticService", "SLOW_CALL_RATE_EXCEEDED",
+                        null, null, null, (double) event.getSlowCallRate(),
+                        null, null, null,
+                        String.format("Slow call rate exceeded: %.2f%%", event.getSlowCallRate())
+                    );
                 })
                 .onCallNotPermitted(event -> {
                     log.warn("Circuit Breaker call not permitted - circuit is OPEN");
+                    
+                    // Log to database
+                    databaseLoggingService.logCircuitBreakerEvent(
+                        "diagnosticService", "CALL_NOT_PERMITTED",
+                        null, null, null, null,
+                        null, null, null,
+                        "Call not permitted - circuit is OPEN"
+                    );
                 });
 
         return circuitBreaker;

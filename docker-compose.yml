@@ -1,6 +1,24 @@
 version: '3.8'
 
 services:
+  postgres:
+    image: postgres:15-alpine
+    hostname: postgres
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: diagnostic_service
+      POSTGRES_USER: diagnostic_user
+      POSTGRES_PASSWORD: diagnostic_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U diagnostic_user -d diagnostic_service"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
     hostname: zookeeper
@@ -40,6 +58,8 @@ services:
     build: .
     container_name: diagnostic-service
     depends_on:
+      postgres:
+        condition: service_healthy
       kafka:
         condition: service_started
     ports:
@@ -47,6 +67,9 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: dev
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      DATABASE_URL: jdbc:postgresql://postgres:5432/diagnostic_service
+      DATABASE_USERNAME: diagnostic_user
+      DATABASE_PASSWORD: diagnostic_password
     volumes:
       - ./logs:/var/log/diagnostic-service
     healthcheck:
@@ -67,3 +90,6 @@ services:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
       KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+
+volumes:
+  postgres_data:

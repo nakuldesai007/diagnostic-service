@@ -26,6 +26,7 @@ public class DiagnosticService {
     private final ErrorClassificationService errorClassificationService;
     private final RetryService retryService;
     private final MessageAttemptTracker attemptTracker;
+    private final DatabaseLoggingService databaseLoggingService;
 
     @Value("${kafka.topics.dead-letter-queue:dead-letter-queue}")
     private String deadLetterQueueTopic;
@@ -37,12 +38,14 @@ public class DiagnosticService {
                            CircuitBreaker circuitBreaker,
                            ErrorClassificationService errorClassificationService,
                            RetryService retryService,
-                           MessageAttemptTracker attemptTracker) {
+                           MessageAttemptTracker attemptTracker,
+                           DatabaseLoggingService databaseLoggingService) {
         this.kafkaTemplate = kafkaTemplate;
         this.circuitBreaker = circuitBreaker;
         this.errorClassificationService = errorClassificationService;
         this.retryService = retryService;
         this.attemptTracker = attemptTracker;
+        this.databaseLoggingService = databaseLoggingService;
     }
 
     @KafkaListener(topics = "${kafka.topics.failed-projection-messages:failed-projection-messages}")
@@ -58,6 +61,15 @@ public class DiagnosticService {
         log.info("Received failed projection message: {} from topic: {}, partition: {}, offset: {}", 
                 messageId, topic, partition, offset);
 
+        // Log message received to database
+        databaseLoggingService.logMessageReceived(
+            messageId, topic, partition, offset, 
+            "test-key", // You can extract this from headers if needed
+            failedMessage.getOriginalMessage(), 
+            failedMessage.getErrorMessage()
+        );
+
+        long startTime = System.currentTimeMillis();
         try {
             // Execute within circuit breaker
             circuitBreaker.executeSupplier(() -> {
@@ -65,17 +77,34 @@ public class DiagnosticService {
                 return null;
             });
             
+            // Log successful processing
+            long processingTime = System.currentTimeMillis() - startTime;
+            databaseLoggingService.logMessageProcessing(
+                messageId, "SUCCESS", null, 
+                circuitBreaker.getState().name(), processingTime, null
+            );
+            
             // Acknowledge the message only after successful processing
             acknowledgment.acknowledge();
             log.debug("Successfully processed and acknowledged message: {}", messageId);
             
         } catch (CallNotPermittedException e) {
             log.warn("Circuit breaker is OPEN, sending message {} to DLQ without processing", messageId);
+            long processingTime = System.currentTimeMillis() - startTime;
+            databaseLoggingService.logMessageProcessing(
+                messageId, "CIRCUIT_BREAKER_OPEN", null, 
+                circuitBreaker.getState().name(), processingTime, "Circuit breaker open - service unavailable"
+            );
             sendToDeadLetterQueue(messageId, failedMessage.getOriginalMessage(), "Circuit breaker open - service unavailable", 0);
             acknowledgment.acknowledge(); // Still acknowledge to prevent reprocessing
             
         } catch (Exception e) {
             log.error("Error processing failed projection message: {}", messageId, e);
+            long processingTime = System.currentTimeMillis() - startTime;
+            databaseLoggingService.logMessageProcessing(
+                messageId, "FAILED", null, 
+                circuitBreaker.getState().name(), processingTime, "Processing error: " + e.getMessage()
+            );
             sendToDeadLetterQueue(messageId, failedMessage.getOriginalMessage(), "Processing error: " + e.getMessage(), 0);
             acknowledgment.acknowledge(); // Acknowledge to prevent infinite reprocessing
         }
@@ -138,26 +167,44 @@ public class DiagnosticService {
 
     private void sendToDeadLetterQueue(String messageId, String originalMessage, String failureReason, int attemptCount) {
         try {
+            ErrorClassificationService.ErrorBucket errorBucket = errorClassificationService.classifyError(failureReason);
+            
             DeadLetterMessage dlqMessage = DeadLetterMessage.builder()
                     .originalMessage(originalMessage)
                     .failureReason(failureReason)
                     .timestamp(Instant.now())
                     .attemptCount(attemptCount)
-                    .errorCategory(errorClassificationService.classifyError(failureReason).getCategory())
+                    .errorCategory(errorBucket.getCategory())
                     .build();
 
             kafkaTemplate.send(deadLetterQueueTopic, messageId, dlqMessage)
                     .whenComplete((result, throwable) -> {
                         if (throwable != null) {
                             log.error("Failed to send message {} to DLQ", messageId, throwable);
+                            // Log failed DLQ attempt to database
+                            databaseLoggingService.logDeadLetterMessage(
+                                messageId, originalMessage, failureReason, attemptCount,
+                                errorBucket.getCategory(), "unknown", 0, 0L, "diagnostic-service", 
+                                throwable.getMessage()
+                            );
                         } else {
                             log.info("Successfully sent message {} to DLQ after {} attempts", 
                                     messageId, attemptCount);
+                            // Log successful DLQ send to database
+                            databaseLoggingService.logDeadLetterMessage(
+                                messageId, originalMessage, failureReason, attemptCount,
+                                errorBucket.getCategory(), "unknown", 0, 0L, "diagnostic-service", null
+                            );
                         }
                     });
 
         } catch (Exception e) {
             log.error("Error creating DLQ message for messageId: {}", messageId, e);
+            // Log error to database
+            databaseLoggingService.logDeadLetterMessage(
+                messageId, originalMessage, failureReason, attemptCount,
+                "unknown", "unknown", 0, 0L, "diagnostic-service", e.getMessage()
+            );
         }
     }
 
