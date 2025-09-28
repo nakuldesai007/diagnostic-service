@@ -40,7 +40,7 @@ public class ErrorClassificationService {
 
     // Static patterns for error classification
     private static final Pattern TRANSIENT_PATTERNS = Pattern.compile(
-        "(?i).*(timeout|connection.*refused|service.*unavailable|network.*error|temporary.*failure|retry.*later).*"
+        "(?i).*(timeout|connection.*refused|service.*unavailable|network.*error|temporary.*failure|retry.*later|connection.*timeout).*"
     );
 
     private static final Pattern VALIDATION_PATTERNS = Pattern.compile(
@@ -48,7 +48,7 @@ public class ErrorClassificationService {
     );
 
     private static final Pattern SYSTEM_PATTERNS = Pattern.compile(
-        "(?i).*(database.*error|connection.*pool|out.*of.*memory|disk.*space|system.*overload).*"
+        "(?i).*(database.*error|database.*connection.*failed|connection.*pool|out.*of.*memory|disk.*space|system.*overload).*"
     );
 
     private static final Pattern PERMANENT_PATTERNS = Pattern.compile(

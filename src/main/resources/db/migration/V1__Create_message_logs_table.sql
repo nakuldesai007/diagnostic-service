@@ -4,7 +4,7 @@ CREATE TABLE message_logs (
     message_id VARCHAR(255) NOT NULL,
     topic VARCHAR(255) NOT NULL,
     partition INTEGER NOT NULL,
-    offset BIGINT NOT NULL,
+    "offset" BIGINT NOT NULL,
     message_key VARCHAR(255),
     original_message TEXT,
     error_message TEXT,
@@ -25,12 +25,12 @@ CREATE TABLE message_logs (
 );
 
 -- Create indexes for better query performance
-CREATE INDEX idx_message_id ON message_logs(message_id);
-CREATE INDEX idx_topic_partition ON message_logs(topic, partition);
-CREATE INDEX idx_created_at ON message_logs(created_at);
-CREATE INDEX idx_processing_status ON message_logs(processing_status);
-CREATE INDEX idx_error_category ON message_logs(error_category);
-CREATE INDEX idx_circuit_breaker_state ON message_logs(circuit_breaker_state);
+CREATE INDEX idx_message_logs_message_id ON message_logs(message_id);
+CREATE INDEX idx_message_logs_topic_partition ON message_logs(topic, partition);
+CREATE INDEX idx_message_logs_created_at ON message_logs(created_at);
+CREATE INDEX idx_message_logs_processing_status ON message_logs(processing_status);
+CREATE INDEX idx_message_logs_error_category ON message_logs(error_category);
+CREATE INDEX idx_message_logs_circuit_breaker_state ON message_logs(circuit_breaker_state);
 
 -- Add comments for documentation
 COMMENT ON TABLE message_logs IS 'Logs all messages consumed by the diagnostic service';

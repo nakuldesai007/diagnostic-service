@@ -2,6 +2,7 @@ package com.example.diagnosticservice.service;
 
 import com.example.diagnosticservice.model.DeadLetterMessage;
 import com.example.diagnosticservice.model.FailedProjectionMessage;
+import com.example.diagnosticservice.model.ProjectionMessage;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import lombok.extern.slf4j.Slf4j;
@@ -46,6 +47,60 @@ public class DiagnosticService {
         this.retryService = retryService;
         this.attemptTracker = attemptTracker;
         this.databaseLoggingService = databaseLoggingService;
+    }
+
+    @KafkaListener(topics = "${kafka.topics.projection-processing-queue:projection-processing-queue}", 
+                   containerFactory = "kafkaListenerContainerFactory")
+    public void handleProjectionMessage(
+            @Payload ProjectionMessage message,
+            @Header(KafkaHeaders.RECEIVED_TOPIC) String topic,
+            @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
+            @Header(KafkaHeaders.RECEIVED_KEY) String key,
+            @Header(KafkaHeaders.OFFSET) long offset,
+            Acknowledgment acknowledgment) {
+        
+        String messageId = message.getId() != null ? message.getId() : 
+                          (key != null ? key : generateMessageId(topic, partition, offset));
+        
+        log.info("Received projection message: {} from topic: {}, partition: {}, offset: {}", 
+                messageId, topic, partition, offset);
+
+        // Log message received to database
+        databaseLoggingService.logMessageReceived(
+            messageId, topic, partition, offset, 
+            key != null ? key : "unknown", 
+            message.toString(), 
+            null
+        );
+
+        long startTime = System.currentTimeMillis();
+        try {
+            // Simulate processing - in real implementation, this would do actual projection processing
+            processProjectionMessage(messageId, message, topic, partition, offset);
+            
+            // Log successful processing
+            long processingTime = System.currentTimeMillis() - startTime;
+            databaseLoggingService.logMessageProcessing(
+                messageId, "SUCCESS", null, 
+                circuitBreaker.getState().name(), processingTime, null
+            );
+            
+            // Acknowledge the message only after successful processing
+            acknowledgment.acknowledge();
+            log.debug("Successfully processed and acknowledged message: {}", messageId);
+            
+        } catch (Exception e) {
+            log.error("Error processing projection message: {}", messageId, e);
+            long processingTime = System.currentTimeMillis() - startTime;
+            databaseLoggingService.logMessageProcessing(
+                messageId, "FAILED", null, 
+                circuitBreaker.getState().name(), processingTime, "Processing error: " + e.getMessage()
+            );
+            
+            // Send to failed projection messages topic for retry logic
+            sendToFailedProjectionTopic(messageId, message.toString(), "Processing error: " + e.getMessage(), topic, partition, offset);
+            acknowledgment.acknowledge();
+        }
     }
 
     @KafkaListener(topics = "${kafka.topics.failed-projection-messages:failed-projection-messages}")
@@ -107,6 +162,72 @@ public class DiagnosticService {
             );
             sendToDeadLetterQueue(messageId, failedMessage.getOriginalMessage(), "Processing error: " + e.getMessage(), 0);
             acknowledgment.acknowledge(); // Acknowledge to prevent infinite reprocessing
+        }
+    }
+
+    private void processProjectionMessage(String messageId, ProjectionMessage message, String topic, int partition, long offset) {
+        log.debug("Processing projection message: {}", messageId);
+        
+        // Simulate projection processing logic
+        // In a real implementation, this would:
+        // 1. Parse the incoming message
+        // 2. Apply business logic/transformations
+        // 3. Update projections/views
+        // 4. Handle any errors that occur during processing
+        
+        // For testing purposes, we'll simulate different scenarios based on message content
+        String messageContent = message.toString().toLowerCase();
+        String errorType = message.getErrorType();
+        
+        if (errorType != null && errorType.equalsIgnoreCase("TIMEOUT")) {
+            throw new RuntimeException("Connection timeout during projection processing");
+        } else if (errorType != null && errorType.equalsIgnoreCase("DATABASE")) {
+            throw new RuntimeException("Database connection failed during projection processing");
+        } else if (errorType != null && errorType.equalsIgnoreCase("VALIDATION")) {
+            throw new RuntimeException("Validation failed during projection processing");
+        } else if (errorType != null && errorType.equalsIgnoreCase("NOT_FOUND")) {
+            throw new RuntimeException("User not found during projection processing");
+        } else if (errorType != null && errorType.equalsIgnoreCase("OVERLOAD")) {
+            throw new RuntimeException("System overload during projection processing");
+        } else if (messageContent.contains("connection timeout") || messageContent.contains("timeout")) {
+            throw new RuntimeException("Connection timeout during projection processing");
+        } else if (messageContent.contains("database connection failed") || messageContent.contains("database")) {
+            throw new RuntimeException("Database connection failed during projection processing");
+        } else if (messageContent.contains("validation failed") || messageContent.contains("validation")) {
+            throw new RuntimeException("Validation failed during projection processing");
+        } else if (messageContent.contains("user not found") || messageContent.contains("not found")) {
+            throw new RuntimeException("User not found during projection processing");
+        } else if (messageContent.contains("system overload") || messageContent.contains("overload")) {
+            throw new RuntimeException("System overload during projection processing");
+        }
+        
+        // If no specific error conditions, process successfully
+        log.info("Successfully processed projection message: {} with data: {}", messageId, message.getData());
+    }
+
+    private void sendToFailedProjectionTopic(String messageId, String originalMessage, String errorMessage, String sourceTopic, int partition, long offset) {
+        try {
+            FailedProjectionMessage failedMessage = FailedProjectionMessage.builder()
+                    .messageId(messageId)
+                    .originalMessage(originalMessage)
+                    .errorMessage(errorMessage)
+                    .sourceTopic(sourceTopic)
+                    .partition(partition)
+                    .offset(offset)
+                    .failureTimestamp(Instant.now())
+                    .build();
+
+            kafkaTemplate.send("failed-projection-messages", messageId, failedMessage)
+                    .whenComplete((result, throwable) -> {
+                        if (throwable != null) {
+                            log.error("Failed to send message {} to failed-projection-messages topic", messageId, throwable);
+                        } else {
+                            log.info("Successfully sent message {} to failed-projection-messages topic", messageId);
+                        }
+                    });
+
+        } catch (Exception e) {
+            log.error("Error creating failed projection message for messageId: {}", messageId, e);
         }
     }
 
@@ -208,20 +329,6 @@ public class DiagnosticService {
         }
     }
 
-    private String extractErrorMessage(String message) {
-        // Simple error message extraction - in real implementation, this would be more sophisticated
-        if (message == null || message.trim().isEmpty()) {
-            return "Empty or null message";
-        }
-        
-        // Try to extract error information from the message
-        // This is a simplified implementation - in practice, you'd parse the actual message structure
-        if (message.contains("Exception") || message.contains("Error")) {
-            return message;
-        }
-        
-        return "Unknown error in message processing";
-    }
 
     private String generateMessageId(String topic, int partition, long offset) {
         return String.format("%s-%d-%d-%s", topic, partition, offset, UUID.randomUUID().toString().substring(0, 8));

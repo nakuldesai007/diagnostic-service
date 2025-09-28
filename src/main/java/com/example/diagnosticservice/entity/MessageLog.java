@@ -39,7 +39,7 @@ public class MessageLog {
     @Column(nullable = false)
     private Integer partition;
     
-    @Column(nullable = false)
+    @Column(name = "\"offset\"", nullable = false)
     private Long offset;
     
     @Column(length = 255)

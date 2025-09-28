@@ -49,7 +49,7 @@ public class DeadLetterMessage {
     @Column
     private Integer partition;
     
-    @Column
+    @Column(name = "\"offset\"")
     private Long offset;
     
     @Column(length = 255)

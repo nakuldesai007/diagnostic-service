@@ -61,7 +61,7 @@ public class RetryAttempt {
     @Column
     private Integer partition;
     
-    @Column
+    @Column(name = "\"offset\"")
     private Long offset;
     
     @Column(columnDefinition = "TEXT")

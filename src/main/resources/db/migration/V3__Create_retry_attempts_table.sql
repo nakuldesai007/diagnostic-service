@@ -12,7 +12,7 @@ CREATE TABLE retry_attempts (
     retry_message TEXT,
     topic VARCHAR(255),
     partition INTEGER,
-    offset BIGINT,
+    "offset" BIGINT,
     failure_reason TEXT,
     stack_trace TEXT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -22,11 +22,11 @@ CREATE TABLE retry_attempts (
 );
 
 -- Create indexes for better query performance
-CREATE INDEX idx_message_id ON retry_attempts(message_id);
-CREATE INDEX idx_attempt_number ON retry_attempts(attempt_number);
-CREATE INDEX idx_created_at ON retry_attempts(created_at);
-CREATE INDEX idx_status ON retry_attempts(status);
-CREATE INDEX idx_error_category ON retry_attempts(error_category);
+CREATE INDEX idx_retry_attempts_message_id ON retry_attempts(message_id);
+CREATE INDEX idx_retry_attempts_attempt_number ON retry_attempts(attempt_number);
+CREATE INDEX idx_retry_attempts_created_at ON retry_attempts(created_at);
+CREATE INDEX idx_retry_attempts_status ON retry_attempts(status);
+CREATE INDEX idx_retry_attempts_error_category ON retry_attempts(error_category);
 
 -- Add comments for documentation
 COMMENT ON TABLE retry_attempts IS 'Logs retry attempts and their outcomes';

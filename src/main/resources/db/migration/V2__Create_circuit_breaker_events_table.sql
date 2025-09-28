@@ -15,11 +15,11 @@ CREATE TABLE circuit_breaker_events (
 );
 
 -- Create indexes for better query performance
-CREATE INDEX idx_circuit_breaker_name ON circuit_breaker_events(circuit_breaker_name);
-CREATE INDEX idx_event_type ON circuit_breaker_events(event_type);
-CREATE INDEX idx_created_at ON circuit_breaker_events(created_at);
-CREATE INDEX idx_from_state ON circuit_breaker_events(from_state);
-CREATE INDEX idx_to_state ON circuit_breaker_events(to_state);
+CREATE INDEX idx_circuit_breaker_events_name ON circuit_breaker_events(circuit_breaker_name);
+CREATE INDEX idx_circuit_breaker_events_type ON circuit_breaker_events(event_type);
+CREATE INDEX idx_circuit_breaker_events_created_at ON circuit_breaker_events(created_at);
+CREATE INDEX idx_circuit_breaker_events_from_state ON circuit_breaker_events(from_state);
+CREATE INDEX idx_circuit_breaker_events_to_state ON circuit_breaker_events(to_state);
 
 -- Add comments for documentation
 COMMENT ON TABLE circuit_breaker_events IS 'Logs circuit breaker events and state changes';
