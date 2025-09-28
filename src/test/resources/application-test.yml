@@ -1,0 +1,32 @@
+# Test Environment Configuration
+spring:
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: test-diagnostic-service-group
+      auto-offset-reset: earliest
+    producer:
+      acks: 1
+      retries: 1
+
+diagnostic:
+  service:
+    max-retry-attempts: 2
+    retry:
+      initial-delay-ms: 100
+      backoff-multiplier: 1.5
+      max-delay-ms: 1000
+    circuit-breaker:
+      failure-rate-threshold: 30
+      wait-duration-open-state: 5s
+      sliding-window-size: 3
+      minimum-number-of-calls: 2
+      permitted-number-of-calls-in-half-open-state: 1
+    attempt-tracker:
+      ttl-hours: 1
+
+logging:
+  level:
+    com.example.diagnosticservice: DEBUG
+    org.springframework.kafka: WARN
+    io.github.resilience4j: WARN

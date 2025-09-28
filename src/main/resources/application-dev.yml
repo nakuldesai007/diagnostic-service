@@ -1,0 +1,24 @@
+# Development Environment Configuration
+spring:
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+diagnostic:
+  service:
+    max-retry-attempts: 2
+    retry:
+      initial-delay-ms: 500
+      backoff-multiplier: 1.5
+      max-delay-ms: 5000
+    circuit-breaker:
+      failure-rate-threshold: 30
+      wait-duration-open-state: 10s
+      sliding-window-size: 5
+      minimum-number-of-calls: 3
+      permitted-number-of-calls-in-half-open-state: 2
+
+logging:
+  level:
+    "[com.example.diagnosticservice]": DEBUG
+    "[org.springframework.kafka]": DEBUG
+    "[io.github.resilience4j]": DEBUG

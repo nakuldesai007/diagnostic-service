@@ -1,0 +1,92 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: diagnostic-service
+  
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: diagnostic-service-group
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        "[spring.deserializer.value.delegate.class]": org.springframework.kafka.support.serializer.JsonDeserializer
+        "[spring.json.trusted.packages]": "*"
+        "[spring.json.value.default.type]": com.example.diagnosticservice.model.FailedProjectionMessage
+        "[session.timeout.ms]": 30000
+        "[heartbeat.interval.ms]": 10000
+        "[max.poll.records]": 10
+    producer:
+      acks: all
+      retries: 3
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        "[enable.idempotence]": true
+        "[max.in.flight.requests.per.connection]": 1
+        "[delivery.timeout.ms]": 120000
+        "[request.timeout.ms]": 30000
+
+# Diagnostic Service Configuration
+# Custom configuration properties defined in DiagnosticProperties class
+diagnostic:
+  service:
+    max-retry-attempts: 3
+    retry:
+      initial-delay-ms: 1000
+      backoff-multiplier: 2.0
+      max-delay-ms: 30000
+    circuit-breaker:
+      failure-rate-threshold: 50
+      wait-duration-open-state: 30s
+      sliding-window-size: 10
+      minimum-number-of-calls: 5
+      permitted-number-of-calls-in-half-open-state: 3
+      slow-call-rate-threshold: 50
+      slow-call-duration-threshold: 2s
+    attempt-tracker:
+      ttl-hours: 1
+
+# Kafka Topics Configuration
+# Custom configuration properties defined in KafkaTopicsProperties class
+# yaml-language-server: $schema=https://json.schemastore.org/application
+kafka:
+  topics:
+    failed-projection-messages: failed-projection-messages
+    projection-processing-queue: projection-processing-queue
+    dead-letter-queue: dead-letter-queue
+
+# Management and Monitoring
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,circuitbreakers
+  endpoint:
+    health:
+      show-details: always
+  simple:
+    metrics:
+      export:
+        enabled: true
+
+# Logging Configuration
+logging:
+  level:
+    "[com.example.diagnosticservice]": DEBUG
+    "[org.springframework.kafka]": INFO
+    "[io.github.resilience4j]": INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+# Application Information
+info:
+  app:
+    name: Diagnostic Service
+    description: Service for handling failed projection messages with retry and circuit breaker patterns
+    version: 0.0.1-SNAPSHOT

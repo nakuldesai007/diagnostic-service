@@ -1,0 +1,48 @@
+# Production Environment Configuration
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP_ID:diagnostic-service-group}
+    producer:
+      retries: 5
+
+diagnostic:
+  service:
+    max-retry-attempts: 3
+    retry:
+      initial-delay-ms: 2000
+      backoff-multiplier: 2.5
+      max-delay-ms: 60000
+    circuit-breaker:
+      failure-rate-threshold: 60
+      wait-duration-open-state: 60s
+      sliding-window-size: 20
+      minimum-number-of-calls: 10
+      permitted-number-of-calls-in-half-open-state: 5
+      slow-call-rate-threshold: 40
+      slow-call-duration-threshold: 5s
+    attempt-tracker:
+      ttl-hours: 24
+
+logging:
+  level:
+    com.example.diagnosticservice: INFO
+    org.springframework.kafka: WARN
+    io.github.resilience4j: WARN
+  file:
+    name: /var/log/diagnostic-service/application.log
+  logback:
+    rollingpolicy:
+      max-file-size: 100MB
+      max-history: 30
+      total-size-cap: 3GB
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
