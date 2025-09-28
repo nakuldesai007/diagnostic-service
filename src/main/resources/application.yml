@@ -82,6 +82,26 @@ kafka:
     projection-processing-queue: projection-processing-queue
     dead-letter-queue: dead-letter-queue
 
+# Packet Processing Configuration
+packet:
+  processing:
+    default-packet-size: 10
+    max-retries: 3
+    retry-delay-ms: 5000
+    timeout:
+      connect: 5000
+      read: 30000
+    retry:
+      max-attempts: 3
+      initial-delay: 1000
+      multiplier: 2.0
+      max-delay: 10000
+      packet-processing:
+        max-attempts: 5
+        initial-delay: 500
+        multiplier: 1.5
+        max-delay: 5000
+
 # Management and Monitoring
 management:
   endpoints:
